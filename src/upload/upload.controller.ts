@@ -9,7 +9,6 @@ import {
 } from '@nestjs/common';
 import { UploadService } from './upload.service';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { Request } from 'express';
 
 @Controller('upload')
 export class UploadController {
@@ -21,5 +20,11 @@ export class UploadController {
   ) {
     if (!file) throw new BadRequestException(`File is required!`);
     return this.uploadService.uploadCsv(file, geonameIDs);
+  }
+  @Post('csv/split')
+  @UseInterceptors(FileInterceptor('file'))
+  async splitAndUploadCsv(@UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException(`File is required!`);
+    return this.uploadService.splitAndUploadCsv(file.buffer);
   }
 }
