@@ -7,7 +7,4 @@ export type JsonType = {
   is_satellite_provider: string;
   is_anycast: string;
 };
-export type JsonTypeShort = Pick<
-  JsonType,
-  'network' | 'geoname_id' | 'registered_country_geoname_id'
->;
+export type JsonTypeShort = Pick<JsonType, 'network' | 'geoname_id'>;

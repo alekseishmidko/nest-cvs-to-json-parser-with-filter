@@ -2,12 +2,13 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import * as ip from 'ip';
 import * as csvParser from 'csv-parser';
 import { Readable } from 'stream';
-
+import * as JSONStream from 'JSONStream';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import { JsonType, JsonTypeShort } from './json.type';
 @Injectable()
 export class UploadService {
+  private outputDir = path.join(__dirname, '..', '..', 'uploads');
   async saveJsonToFile(jsonData: any): Promise<string> {
     const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
 
@@ -82,13 +83,10 @@ export class UploadService {
   } // развернуть в json все комбинации ip
 
   removeFields(data: JsonType[]): JsonTypeShort[] {
-    return data.map(
-      ({ network, geoname_id, registered_country_geoname_id }) => ({
-        network,
-        geoname_id,
-        registered_country_geoname_id,
-      }),
-    );
+    return data.map(({ network, geoname_id }) => ({
+      network,
+      geoname_id,
+    }));
   } // удалить ненужные поля
 
   async splitAndUploadCsv(buffer: Buffer, linesPerFile: number = 2000) {
@@ -132,5 +130,55 @@ export class UploadService {
     }
 
     return { message: 'File successfully processed and split into parts' };
+  }
+
+  async filterJson(file: Express.Multer.File) {
+    const stream = Readable.from(file.buffer.toString());
+    const results = [];
+    return new Promise<void>((resolve, reject) => {
+      try {
+        stream
+          .pipe(JSONStream.parse('*')) // Парсим JSON поток
+          .on('data', (data) => results.push(data))
+          .on('end', async () => {
+            const filtered = this.removeFields(results);
+            await this.saveJsonToFile(filtered);
+            console.log('File successfully processed');
+            resolve();
+          })
+          .on('error', (err) => {
+            console.error('Error processing JSON:', err);
+            reject(new BadRequestException('Error processing JSON file'));
+          });
+      } catch (error) {
+        reject(new BadRequestException('Error processing JSON file'));
+      }
+    });
+  }
+
+  async splitJson(file: Express.Multer.File, chunkSize: number) {
+    try {
+      const jsonArray = JSON.parse(file.buffer.toString());
+
+      if (!Array.isArray(jsonArray)) {
+        throw new BadRequestException('Provided JSON is not an array');
+      }
+
+      const totalChunks = Math.ceil(jsonArray.length / chunkSize);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = jsonArray.slice(i * chunkSize, (i + 1) * chunkSize);
+
+        // Создаем файл для каждой части
+        const chunkFilePath = path.join(this.outputDir, `chunk_${i + 1}.json`);
+        fs.writeFileSync(chunkFilePath, JSON.stringify(chunk, null, 2), 'utf8');
+        console.log(`File saved: ${chunkFilePath}`);
+      }
+
+      return { message: `JSON successfully split into ${totalChunks} files` };
+    } catch (err) {
+      console.error('Error processing JSON:', err);
+      throw new BadRequestException('Failed to process JSON');
+    }
   }
 }

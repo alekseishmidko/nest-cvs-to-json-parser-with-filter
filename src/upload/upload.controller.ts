@@ -3,7 +3,6 @@ import {
   Controller,
   Post,
   Query,
-  Req,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -26,5 +25,21 @@ export class UploadController {
   async splitAndUploadCsv(@UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException(`File is required!`);
     return this.uploadService.splitAndUploadCsv(file.buffer);
+  }
+
+  @Post('json/filter')
+  @UseInterceptors(FileInterceptor('file'))
+  async filterJson(@UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException(`File is required!`);
+    return this.uploadService.filterJson(file);
+  }
+  @Post('json/split')
+  @UseInterceptors(FileInterceptor('file'))
+  async splitJson(
+    @UploadedFile() file: Express.Multer.File,
+    @Query('split') split: number,
+  ) {
+    if (!file) throw new BadRequestException(`File is required!`);
+    return this.uploadService.splitJson(file, split);
   }
 }
