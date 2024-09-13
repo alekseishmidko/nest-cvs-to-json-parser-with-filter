@@ -8,3 +8,8 @@ export type JsonType = {
   is_anycast: string;
 };
 export type JsonTypeShort = Pick<JsonType, 'network' | 'geoname_id'>;
+
+export type JsonTypeExpand = JsonTypeShort & {
+  firstIp: string;
+  lastIp: string;
+};

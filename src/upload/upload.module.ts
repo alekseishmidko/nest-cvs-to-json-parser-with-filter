@@ -3,7 +3,7 @@ import { UploadService } from './upload.service';
 import { UploadController } from './upload.controller';
 import { MulterModule } from '@nestjs/platform-express';
 import * as multer from 'multer';
-import { CsvService } from './csv.service';
+import { CsvService } from '../csv/csv.service';
 @Module({
   imports: [
     MulterModule.register({

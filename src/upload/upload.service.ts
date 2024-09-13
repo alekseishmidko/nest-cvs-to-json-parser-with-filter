@@ -5,16 +5,19 @@ import { Readable } from 'stream';
 import * as JSONStream from 'JSONStream';
 import * as fs from 'fs-extra';
 import * as path from 'path';
+import * as readline from 'readline';
 import { JsonType, JsonTypeShort } from './json.type';
+import { CsvService } from '../csv/csv.service';
 @Injectable()
 export class UploadService {
+  constructor(private readonly csvService: CsvService) {}
   private outputDir = path.join(__dirname, '..', '..', 'uploads');
   async saveJsonToFile(jsonData: any): Promise<string> {
     const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
 
     await fs.ensureDir(uploadsDir);
 
-    const fileName = `json_${Date.now()}.json`;
+    const fileName = `json_new${Date.now()}.json`;
     const filePath = path.join(uploadsDir, fileName);
 
     await fs.writeJson(filePath, jsonData, { spaces: 2 });
@@ -22,24 +25,25 @@ export class UploadService {
     return filePath;
   }
 
-  async uploadCsv(file: Express.Multer.File, geonameIDs: string) {
+  async uploadCsv(file: Express.Multer.File) {
     const results = [];
     const stream = Readable.from(file.buffer.toString());
-    const geonameIDsArr = geonameIDs.split(',');
+    // const geonameIDsArr = geonameIDs.split(',');
     //   ['3144096', '2635167', '6251999', '660013', '2661886']; //Norway, UK, Canada,Finland,Sweden
     try {
       stream
         .pipe(csvParser())
-        .on('data', (data) => results.push(data))
+        .on('data', (data) => {
+          if (!['3144096'].includes(data.geoname_id)) return;
+          if (data.network) {
+            results.push({
+              geoname_id: data.geoname_id,
+              network: data.network,
+            });
+          }
+        })
         .on('end', async () => {
-          const filteredGeoname = this.filterByGeonameId(
-            results,
-            geonameIDsArr,
-          ); //отфильровал ненужные страны
-          const filteredFields = this.removeFields(filteredGeoname); // удалил ненужные поля
-          const expanded = this.expandNetworksInJson(filteredFields); // расширил json для все комбинаций ip
-
-          await this.saveJsonToFile(expanded);
+          await this.saveJsonToFile(results);
 
           return results;
         });
@@ -49,45 +53,6 @@ export class UploadService {
       throw new BadRequestException('Error upload');
     }
   }
-
-  filterByGeonameId(data: JsonType[], geonameIds: string[]): JsonType[] {
-    return data.filter((item) => geonameIds.includes(item.geoname_id));
-  }
-
-  expandNetwork(network: string): string[] {
-    const range = ip.cidrSubnet(network);
-    const startIP = range.firstAddress;
-    const endIP = range.lastAddress;
-
-    const result: string[] = [];
-    let currentIP = startIP;
-
-    while (ip.toLong(currentIP) <= ip.toLong(endIP)) {
-      result.push(currentIP);
-      currentIP = ip.fromLong(ip.toLong(currentIP) + 1);
-    }
-
-    return result;
-  }
-
-  expandNetworksInJson(inputJson: JsonTypeShort[]): JsonTypeShort[] {
-    return inputJson
-      .map((entry) => {
-        const expandedIps = this.expandNetwork(entry.network);
-        return expandedIps.map((ipAddress) => ({
-          ...entry,
-          network: ipAddress,
-        }));
-      })
-      .flat();
-  } // развернуть в json все комбинации ip
-
-  removeFields(data: JsonType[]): JsonTypeShort[] {
-    return data.map(({ network, geoname_id }) => ({
-      network,
-      geoname_id,
-    }));
-  } // удалить ненужные поля
 
   async splitAndUploadCsv(buffer: Buffer, linesPerFile: number = 2000) {
     const outputDir = path.join(__dirname, '..', '..', 'uploads', 'splitted');
@@ -121,7 +86,7 @@ export class UploadService {
       currentLineCount++;
       if (currentLineCount >= linesPerFile) {
         currentLineCount = 0;
-        if (fileStream) fileStream.end(); // Закрываем поток, если достигнуто количество строк
+        if (fileStream) fileStream.end();
       }
     }
 
@@ -132,53 +97,76 @@ export class UploadService {
     return { message: 'File successfully processed and split into parts' };
   }
 
-  async filterJson(file: Express.Multer.File) {
-    const stream = Readable.from(file.buffer.toString());
-    const results = [];
-    return new Promise<void>((resolve, reject) => {
-      try {
-        stream
-          .pipe(JSONStream.parse('*')) // Парсим JSON поток
-          .on('data', (data) => results.push(data))
-          .on('end', async () => {
-            const filtered = this.removeFields(results);
-            await this.saveJsonToFile(filtered);
-            console.log('File successfully processed');
-            resolve();
-          })
-          .on('error', (err) => {
-            console.error('Error processing JSON:', err);
-            reject(new BadRequestException('Error processing JSON file'));
-          });
-      } catch (error) {
-        reject(new BadRequestException('Error processing JSON file'));
+  async splitAndUploadJson(buffer: Buffer, objectsPerFile: number = 2000) {
+    const outputDir = path.join(__dirname, '..', '..', 'uploads', 'splitted');
+    const fileName = 'splitted';
+
+    // Создаем директорию для загрузки, если ее нет
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    let currentFileIndex = 0;
+    let currentObjectCount = 0;
+    let fileStream: fs.WriteStream | null = null;
+
+    try {
+      // Преобразуем буфер в JSON-массив
+      const jsonArray = JSON.parse(buffer.toString('utf-8'));
+
+      for (const jsonObject of jsonArray) {
+        // Если мы достигли лимита объектов на файл или только начинаем, создаем новый файл
+        if (currentObjectCount === 0) {
+          const newFilePath = path.join(
+            outputDir,
+            `${fileName}_part_${currentFileIndex + 1}.json`,
+          );
+          fileStream = fs.createWriteStream(newFilePath); // Создаем поток для записи
+          fileStream.write('['); // Начинаем JSON-массив
+          currentFileIndex++;
+        } else {
+          fileStream?.write(','); // Добавляем запятую перед следующими объектами
+        }
+
+        // Записываем объект в файл
+        fileStream?.write(JSON.stringify(jsonObject));
+
+        currentObjectCount++;
+
+        // Если мы достигли лимита объектов на файл, закрываем текущий файл
+        if (currentObjectCount >= objectsPerFile) {
+          currentObjectCount = 0;
+          fileStream?.write(']'); // Закрываем JSON-массив
+          fileStream?.end();
+        }
       }
-    });
+
+      // Если файл еще не был закрыт (остались объекты, но их меньше objectsPerFile)
+      if (fileStream) {
+        fileStream.write(']'); // Закрываем JSON-массив
+        fileStream.end();
+      }
+
+      return { message: 'JSON successfully processed and split into parts' };
+    } catch (error) {
+      throw new BadRequestException('Error processing JSON');
+    }
   }
 
-  async splitJson(file: Express.Multer.File, chunkSize: number) {
-    try {
-      const jsonArray = JSON.parse(file.buffer.toString());
+  expandNetwork(network: string): Readable {
+    const range = ip.cidrSubnet(network);
+    const startIP = ip.toLong(range.firstAddress);
+    const endIP = ip.toLong(range.lastAddress);
 
-      if (!Array.isArray(jsonArray)) {
-        throw new BadRequestException('Provided JSON is not an array');
-      }
+    const ipStream = new Readable({
+      read() {
+        for (let currentIP = startIP; currentIP <= endIP; currentIP++) {
+          this.push(ip.fromLong(currentIP));
+        }
+        this.push(null); // Завершаем стрим
+      },
+    });
 
-      const totalChunks = Math.ceil(jsonArray.length / chunkSize);
-
-      for (let i = 0; i < totalChunks; i++) {
-        const chunk = jsonArray.slice(i * chunkSize, (i + 1) * chunkSize);
-
-        // Создаем файл для каждой части
-        const chunkFilePath = path.join(this.outputDir, `chunk_${i + 1}.json`);
-        fs.writeFileSync(chunkFilePath, JSON.stringify(chunk, null, 2), 'utf8');
-        console.log(`File saved: ${chunkFilePath}`);
-      }
-
-      return { message: `JSON successfully split into ${totalChunks} files` };
-    } catch (err) {
-      console.error('Error processing JSON:', err);
-      throw new BadRequestException('Failed to process JSON');
-    }
+    return ipStream;
   }
 }
