@@ -4,7 +4,6 @@ import * as csvParser from 'csv-parser';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import * as ip from 'ip';
-import * as fastCsv from 'fast-csv';
 
 import { JsonTypeExpand, JsonTypeShort } from '../upload/json.type';
 @Injectable()
@@ -18,11 +17,11 @@ export class CsvService {
 
     return new Promise((resolve, reject) => {
       const stream = Readable.from(file.buffer);
-
+      const folder = '2635167';
       stream
         .pipe(csvParser())
         .on('data', (data) => {
-          if (data.geoname_id === '2635167') {
+          if (data.geoname_id === folder) {
             results.push({
               network: data.network,
               geoname_id: data.geoname_id,
@@ -31,7 +30,7 @@ export class CsvService {
         })
         .on('end', async () => {
           const res = await this.convertCidrToIpRangeAndSave(results);
-          const res2 = await this.processIpRangesAndSave(res);
+          const res2 = await this.processIpRangesAndSave2(res, folder);
           resolve(results);
         })
         .on('error', (error) => {
@@ -91,7 +90,10 @@ export class CsvService {
     return result;
   }
 
-  async processIpRangesAndSave(jsonData: JsonTypeExpand[]): Promise<void> {
+  async processIpRangesAndSave(
+    jsonData: JsonTypeExpand[],
+    folder: string,
+  ): Promise<void> {
     // Проходим по каждому диапазону
     jsonData.forEach(async (entry, index) => {
       let result: { network: string; geoname_id: string; ips: string[] }[] = [];
@@ -111,7 +113,13 @@ export class CsvService {
         geoname_id,
         ips,
       });
-      const uploadsDir = path.join(__dirname, '..', '..', 'uploads', '2635167');
+      const uploadsDir = path.join(
+        __dirname,
+        '..',
+        '..',
+        'uploads',
+        `${folder}`,
+      );
       await fs.ensureDir(uploadsDir);
       const fileName = `expanded_ips_arr_${index}.json`;
       const filePath = path.join(uploadsDir, fileName);
@@ -123,5 +131,96 @@ export class CsvService {
     });
   }
 
-  // async get(file: Express.Multer.File) {}
+  async processIpRangesAndSave2(
+    jsonData: JsonTypeExpand[],
+    folder: string,
+  ): Promise<void> {
+    const uploadsDir = path.join(__dirname, '..', '..', 'uploads', `${folder}`);
+    await fs.ensureDir(uploadsDir);
+
+    // Обработка диапазонов последовательно для предотвращения перегрузки системы
+    for (let index = 0; index < jsonData.length; index++) {
+      const entry = jsonData[index];
+      const { network, geoname_id, firstIp, lastIp } = entry;
+
+      // Генерация списка IP-адресов с использованием потока для записи файла по мере генерации
+      const fileName = `expanded_ips_arr_${index}.json`;
+      const filePath = path.join(uploadsDir, fileName);
+      const fileStream = fs.createWriteStream(filePath);
+
+      fileStream.write('[\n');
+
+      let first = true;
+      let currentIp = firstIp;
+      while (ip.toLong(currentIp) <= ip.toLong(lastIp)) {
+        if (!first) {
+          fileStream.write(',\n');
+        }
+        fileStream.write(
+          JSON.stringify({
+            network,
+            geoname_id,
+            ip: currentIp,
+          }),
+        );
+        first = false;
+        currentIp = ip.fromLong(ip.toLong(currentIp) + 1);
+      }
+
+      fileStream.write('\n]');
+      fileStream.end();
+
+      console.log(`File saved: ${filePath}`);
+    }
+  }
+  transformIpJson(
+    data: { network: string; geoname_id: string; ips: string[] }[],
+  ): JsonTypeShort[] {
+    const result: JsonTypeShort[] = [];
+
+    data.forEach((entry) => {
+      entry.ips.forEach((ip) => {
+        result.push({
+          network: ip,
+          geoname_id: entry.geoname_id,
+        });
+      });
+    });
+
+    return result;
+  }
+
+  async processIpsToJsonShort() {
+    const inputFolder = path.join(__dirname, '..', '..', 'uploads', '6251999');
+    const outputFolder = path.join(
+      __dirname,
+      '..',
+      '..',
+      'uploads',
+      '6251999',
+      'transformed',
+    );
+
+    try {
+      await fs.ensureDir(outputFolder); // Проверяем, существует ли выходная папка, и создаем её, если нет
+
+      const files = await fs.readdir(inputFolder);
+
+      for (const file of files) {
+        const filePath = path.join(inputFolder, file);
+        const outputFilePath = path.join(outputFolder, `transformed_${file}`);
+
+        // Чтение содержимого файла
+        const fileData = await fs.readJson(filePath);
+        const transformedData = this.transformIpJson(fileData);
+
+        // Сохранение трансформированного файла
+        await fs.writeJson(outputFilePath, transformedData, { spaces: 2 });
+
+        console.log(`File processed and saved: ${outputFilePath}`);
+      }
+    } catch (error) {
+      console.error('Error processing files:', error);
+    }
+  }
 }

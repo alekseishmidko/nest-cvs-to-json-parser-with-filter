@@ -17,7 +17,7 @@ export class UploadService {
 
     await fs.ensureDir(uploadsDir);
 
-    const fileName = `json_new${Date.now()}.json`;
+    const fileName = `json_new_${Date.now()}.json`;
     const filePath = path.join(uploadsDir, fileName);
 
     await fs.writeJson(filePath, jsonData, { spaces: 2 });
@@ -34,7 +34,7 @@ export class UploadService {
       stream
         .pipe(csvParser())
         .on('data', (data) => {
-          if (!['3144096'].includes(data.geoname_id)) return;
+          if (!['2661886'].includes(data.geoname_id)) return;
           if (data.network) {
             results.push({
               geoname_id: data.geoname_id,

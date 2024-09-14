@@ -20,10 +20,9 @@ export class CsvController {
     return this.csvService.parseCsvFile(file);
   }
 
-  @Post('array') @UseInterceptors(FileInterceptor('file')) async convertCsv(
-    @UploadedFile() file: Express.Multer.File,
-  ) {
-    if (!file) throw new BadRequestException(`File is required!`);
-    return this.csvService.parseCsvFile(file);
+  @Post('array')
+  @UseInterceptors(FileInterceptor('file'))
+  async convertCsv() {
+    return this.csvService.processIpsToJsonShort();
   }
 }
