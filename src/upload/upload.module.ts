@@ -4,6 +4,7 @@ import { UploadController } from './upload.controller';
 import { MulterModule } from '@nestjs/platform-express';
 import * as multer from 'multer';
 import { CsvService } from '../csv/csv.service';
+import { PrismaService } from 'src/prisma.service';
 @Module({
   imports: [
     MulterModule.register({
@@ -15,6 +16,6 @@ import { CsvService } from '../csv/csv.service';
     }),
   ],
   controllers: [UploadController],
-  providers: [UploadService, CsvService],
+  providers: [UploadService, CsvService, PrismaService],
 })
 export class UploadModule {}

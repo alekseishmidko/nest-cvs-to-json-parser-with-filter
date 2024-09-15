@@ -6,22 +6,25 @@ import * as path from 'path';
 import * as ip from 'ip';
 
 import { JsonTypeExpand, JsonTypeShort } from '../upload/json.type';
+import { PrismaService } from 'src/prisma.service';
 @Injectable()
 export class CsvService {
+  constructor(private readonly prisma: PrismaService) {}
   private outputDir = path.join(__dirname, '..', '..', 'uploads', 'csv');
 
   async parseCsvFile(
     file: Express.Multer.File,
+    country: string,
   ): Promise<{ network: string; geoname_id: string }[]> {
     const results: { network: string; geoname_id: string }[] = [];
 
     return new Promise((resolve, reject) => {
       const stream = Readable.from(file.buffer);
-      const folder = '2635167';
+      // const folder = '2635167';
       stream
         .pipe(csvParser())
         .on('data', (data) => {
-          if (data.geoname_id === folder) {
+          if (data.geoname_id === country) {
             results.push({
               network: data.network,
               geoname_id: data.geoname_id,
@@ -30,7 +33,8 @@ export class CsvService {
         })
         .on('end', async () => {
           const res = await this.convertCidrToIpRangeAndSave(results);
-          const res2 = await this.processIpRangesAndSave2(res, folder);
+          // const res2 = await this.processIpRangesAndSave2(res, folder);
+          await this.processIpRangesAndSaveToDB(res);
           resolve(results);
         })
         .on('error', (error) => {
@@ -202,7 +206,7 @@ export class CsvService {
     );
 
     try {
-      await fs.ensureDir(outputFolder); // Проверяем, существует ли выходная папка, и создаем её, если нет
+      await fs.ensureDir(outputFolder);
 
       const files = await fs.readdir(inputFolder);
 
@@ -221,6 +225,150 @@ export class CsvService {
       }
     } catch (error) {
       console.error('Error processing files:', error);
+    }
+  }
+  async processIpsToJsonShortAndSaveToDB() {
+    const inputFolder = path.join(__dirname, '..', '..', 'uploads', '3144096');
+
+    try {
+      const files = await fs.readdir(inputFolder);
+
+      for (const file of files) {
+        const filePath = path.join(inputFolder, file);
+
+        // Чтение содержимого файла
+        const fileData = await fs.readJson(filePath);
+        await this.transformIpAndSave(fileData);
+
+        console.log(`File processed and saved:  `);
+      }
+    } catch (error) {
+      console.error('Error processing files:', error);
+    }
+  }
+
+  async transformIpAndSave(
+    data: { network: string; geoname_id: string; ips: string[] }[],
+  ) {
+    try {
+      for (const entry of data) {
+        const { geoname_id, ips } = entry;
+
+        for (const ip of ips) {
+          await this.prisma.ip.create({
+            data: {
+              network: ip, // Один из элементов массива ips
+              geoname_id: geoname_id, // geoname_id из текущего объекта
+            },
+          });
+        }
+      }
+
+      console.log('All IPs have been saved to the database.');
+    } catch (error) {
+      console.error('Error saving IPs to database:', error);
+    }
+  }
+
+  async get(country: string, page: number) {
+    const limit = 100000;
+    const startIndex = (page - 1) * limit;
+    return this.prisma.ip.findMany({
+      where: { geoname_id: country },
+      select: { geoname_id: true, network: true },
+      skip: startIndex,
+      take: +limit,
+    });
+  }
+
+  async getAndSaveInFolder(country: string) {
+    const outputFolder = path.join(
+      __dirname,
+      '..',
+      '..',
+      'uploads',
+      `${country}`,
+      'save-from-db',
+    );
+    let page = 1;
+    let hasMoreData = true;
+    await fs.ensureDir(outputFolder);
+
+    while (hasMoreData) {
+      // Получаем данные с БД
+      const data = await this.get(country, page);
+
+      if (data.length === 0) {
+        hasMoreData = false;
+        console.log('All data has been fetched.');
+        break;
+      }
+
+      const filePath = path.join(outputFolder, `data_page_${page}.json`);
+
+      await fs.writeJson(filePath, data, { spaces: 2 });
+
+      console.log(`Page ${page} data saved to ${filePath}`);
+
+      page++;
+    }
+  }
+
+  async processIpRangesAndSaveToDB(
+    jsonData: {
+      geoname_id: string;
+      network: string;
+      firstIp: string;
+      lastIp: string;
+    }[],
+  ): Promise<void> {
+    const BATCH_SIZE = 1000; // Пакетная вставка данных в БД
+    try {
+      for (const entry of jsonData) {
+        const { geoname_id, firstIp, lastIp } = entry;
+        let currentIp = firstIp;
+        let batch = [];
+
+        // Генерация и пакетная вставка IP-адресов
+        while (ip.toLong(currentIp) <= ip.toLong(lastIp)) {
+          batch.push({
+            geoname_id: geoname_id,
+            network: currentIp,
+          });
+
+          // Вставка в базу данных, когда накоплено BATCH_SIZE записей
+          if (batch.length >= BATCH_SIZE) {
+            await this.prisma.ip.createMany({
+              data: batch,
+              skipDuplicates: true, // Пропуск дубликатов
+            });
+            console.log(
+              `Inserted batch of ${BATCH_SIZE} IPs into the database.`,
+            );
+            batch = []; // Очистка для следующего батча
+          }
+
+          // Переход к следующему IP
+          currentIp = ip.fromLong(ip.toLong(currentIp) + 1);
+        }
+
+        // Вставка оставшихся данных, если есть
+        if (batch.length > 0) {
+          await this.prisma.ip.createMany({
+            data: batch,
+            skipDuplicates: true,
+          });
+          console.log(
+            `Inserted final batch of ${batch.length} IPs into the database.`,
+          );
+        }
+      }
+
+      console.log(
+        'All IP ranges have been processed and saved to the database.',
+      );
+    } catch (error) {
+      console.error('Error saving IPs to the database:', error);
     }
   }
 }
